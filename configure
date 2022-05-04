@@ -976,6 +976,25 @@ fi
 print_config "rdmacm" "$rdmacm"
 
 ##########################################
+# dhms probe
+if test "$dhms" != "yes" ; then
+  dhms="no"
+fi
+cat > $TMPC << EOF
+#include <stdio.h>
+#include <dhms.h>
+int main(int argc, char **argv)
+{
+  dhms_addr addr = 0UL;
+  return 0;
+}
+EOF
+if compile_prog "" "-ldhms" "dhms"; then
+    dhms="yes"
+fi
+print_config "dhms" "$dhms"
+
+##########################################
 # librpma probe
 # The librpma engines require librpma>=v0.11.0 with rpma_cq_get_wc().
 if test "$librpma" != "yes" ; then
@@ -2929,6 +2948,9 @@ if test "$cmp_swap" = "yes" ; then
 fi
 if test "$libverbs" = "yes" -a "$rdmacm" = "yes" ; then
   output_sym "CONFIG_RDMA"
+fi
+if test "$dhms" = "yes"; then
+  output_sym "CONFIG_DHMS"
 fi
 # librpma is supported on the 'x86_64' architecture for now
 if test "$cpu" = "x86_64" -a "$libverbs" = "yes" -a "$rdmacm" = "yes" \

@@ -1,0 +1,15 @@
+; dhms-seq-read.job for fiotest
+
+[global]
+name=dhms-seq-read
+rw=randread
+bs=256
+numjobs=1
+time_based
+runtime=1
+create_serialize=0
+
+[job1]
+size=4KB
+ioengine=dhms
+conf=/

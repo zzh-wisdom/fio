@@ -108,6 +108,11 @@ ifdef CONFIG_RDMA
   rdma_LIBS = -libverbs -lrdmacm
   ENGINES += rdma
 endif
+ifdef CONFIG_DHMS
+  dhms_SRCS = engines/dhms.c
+  dhms_LIBS = -ldhms
+  ENGINES += dhms
+endif
 ifdef CONFIG_LIBRPMA_APM
   librpma_apm_SRCS = engines/librpma_apm.c
   librpma_fio_SRCS = engines/librpma_fio.c

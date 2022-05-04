@@ -1,0 +1,15 @@
+; dhms-rand-write.job for fiotest
+
+[global]
+name=dhms-seq-write
+rw=randwrite
+bs=256
+numjobs=1
+time_based
+runtime=1
+create_serialize=0
+
+[job1]
+size=4K
+ioengine=dhms
+conf=/

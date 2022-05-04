@@ -2059,6 +2059,11 @@ struct fio_option fio_options[FIO_MAX_OPTS] = {
 			    .help = "RDMA IO engine",
 			  },
 #endif
+#ifdef CONFIG_DHMS
+				{ .ival = "dhms",
+			    .help = "DHMS engine",
+			  },
+#endif
 #ifdef CONFIG_LIBRPMA_APM
 			  { .ival = "librpma_apm",
 			    .help = "librpma IO engine in APM mode",
