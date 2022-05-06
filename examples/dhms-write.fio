@@ -3,13 +3,14 @@
 [global]
 name=dhms-seq-write
 rw=write
-bs=256
-numjobs=1
+bs=4096
+thread=1
+numjobs=2
 time_based
 runtime=1
 create_serialize=0
 
 [job1]
-size=4K
+size=16K
 ioengine=dhms
 conf=/

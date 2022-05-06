@@ -188,6 +188,7 @@ struct thread_data {
 	struct thread_options o;
 	void *eo;
 	pthread_t thread;
+	unsigned int thread_total_num;  // 线程总数
 	unsigned int thread_number;
 	unsigned int subjob_number;
 	unsigned int groupid;

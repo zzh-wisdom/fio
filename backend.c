@@ -2410,6 +2410,7 @@ reap:
 
 			fd = calloc(1, sizeof(*fd));
 			fd->td = td;
+			td->thread_total_num = nr_thread;
 			fd->sk_out = sk_out;
 
 			if (td->o.use_thread) {

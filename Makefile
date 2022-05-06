@@ -508,8 +508,17 @@ endif
 
 all: $(PROGS) $(T_TEST_PROGS) $(UT_PROGS) $(SCRIPTS) $(ENGS_OBJS) FORCE
 
-.PHONY: all install clean test
+.PHONY: all install clean test dhms_install dhms_uninstall
 .PHONY: FORCE cscope
+
+dhms_install:
+	gcc -shared -fPIC -o libdhms.so dhms.c
+	sudo cp dhms.h /usr/local/include
+	sudo cp libdhms.so /usr/local/lib
+
+dhms_uninstall:
+	sudo rm /usr/local/include/dhms.h
+	sudo rm /usr/local/lib/libdhms.so
 
 %.o : %.c
 	@mkdir -p $(dir $@)

@@ -17,13 +17,13 @@ dhms_addr dhms_alloc(struct dhms_pool *pool, size_t size) {
 }
 // 对于已申请但从未写入的addr，依然允许读取（返回脏值）
 int dhms_read(struct dhms_pool *pool, dhms_addr addr, void *buf, size_t len) {
-  fprintf(stderr, "[%s] Read Addr: (%#lx, %lu), Buf: (%p)\n", __func__, addr,
-          len, buf);
+  // fprintf(stderr, "[%s] Read Addr: (%#lx, %lu), Buf: (%p)\n", __func__, addr,
+  //         len, buf);
   return len;
 }
 int dhms_write(struct dhms_pool *pool, dhms_addr addr, void *buf, size_t len) {
-  fprintf(stderr, "[%s] Write Addr: %#lx, Buf: (%p, %lu)\n", __func__, addr,
-          buf, len);
+  // fprintf(stderr, "[%s] Write Addr: %#lx, Buf: (%p, %lu)\n", __func__, addr,
+  //         buf, len);
   return len;
 }
 void dhms_free(struct dhms_pool *pool, dhms_addr addr) {

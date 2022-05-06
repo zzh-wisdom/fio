@@ -33,50 +33,109 @@ static struct fio_option options[] = {
     }};
 
 struct dhms_data {
-  struct dhms_pool *pool;
-  size_t ws_size;
-  size_t bs;
-  dhms_addr *addrs;
+  size_t ws_size;  // 数据集大小
+  size_t bs;  // 单次io的大小
   int num_addrs;
+
+  // 全局client启动后才初始化
+  dhms_addr *addrs;
+  struct dhms_pool *pool;
 };
+
+static pthread_mutex_t g_init_mut;
+static int thread_total_num = 0;
+static pthread_barrier_t g_thread_sync_barrier;
+static bool has_initiator = false; // 是否有线程在初始化
+
+dhms_addr *g_addrs;
 
 #define OBJ_MAX_SIZE (2L << 20)
 
+// 忽略
+static int fio_dhms_setup(struct thread_data *td) {
+  fprintf(stderr, "[%s] \n", __func__);
+  return 0;
+}
+
+// 初始化全局环境
 static int fio_dhms_init(struct thread_data *td) {
   struct dhms_data *dd;
   struct thread_options *o = &td->o;
   struct dhms_options_values *eo = td->eo;
+  int rc;
+  bool i_am_initiator = false;
+
+  printf("thread_total_num: %u\n", td->thread_total_num);
 
   dd = td->io_ops_data;
-  if (!dd) {
-    dd = malloc(sizeof(*dd));
-    assert(dd);
-    memset(dd, 0, sizeof(*dd));
+  dd = malloc(sizeof(*dd));
+  assert(dd);
+  memset(dd, 0, sizeof(*dd));
+  dd->ws_size = o->size;
+  dd->bs = o->bs[DDIR_WRITE];
+  assert(dd->bs);
+  dd->num_addrs = dd->ws_size / dd->bs;
+  assert(dd->num_addrs);
+  td->io_ops_data = dd;
 
-    dd->ws_size = o->size;
-    dd->bs = o->bs[DDIR_WRITE];
-    assert(dd->bs);
+  // 竞争初始化者
+  pthread_mutex_lock(&g_init_mut);
+  if(!has_initiator) {
+    i_am_initiator = true;
+    has_initiator = true;
+  }
+  pthread_mutex_unlock(&g_init_mut);
 
-    dd->num_addrs = dd->ws_size / dd->bs;
-    assert(dd->num_addrs);
-    dd->addrs = malloc(dd->num_addrs * sizeof(dhms_addr));
-    assert(dd->addrs);
+  if(i_am_initiator) {
+    // 初始化全局环境，即各个线程共享的部分，包括
+    // 1. 全局共享变量
+    // 2. 共享master qp
+    thread_total_num = td->thread_total_num;
+    rc = pthread_barrier_init(&g_thread_sync_barrier, NULL, thread_total_num);
+    assert(!rc);
 
-    // 预分配GAddr
+    g_addrs = malloc(dd->num_addrs * sizeof(dhms_addr));
+    assert(g_addrs);
+    dd->addrs = g_addrs;
+
+    // TODO: 初始化rrpc_manager, 与master建立连接
+  }
+  pthread_barrier_wait(&g_thread_sync_barrier);
+
+  // 每个线程和dn建立qp
+  // 准备所需的mr buf
+  pthread_barrier_wait(&g_thread_sync_barrier);
+
+  if(i_am_initiator) {
+    // 创建pool
     dd->pool = dhms_create(eo->conf_file, "fio-pool");
+    // 预分配GAddr
     for (int i = 0; i < dd->num_addrs; i++) {
       dd->addrs[i] = dhms_alloc(dd->pool, o->bs[DDIR_WRITE]);
       // 预写
       dhms_write(dd->pool, dd->addrs[i], &i, sizeof(i));
     }
-
-    td->io_ops_data = dd;
   }
+  pthread_barrier_wait(&g_thread_sync_barrier);
+
+  if(!i_am_initiator) {
+    // 获取pool句柄
+    // 设置dd->addrs[i]
+    dd->addrs = g_addrs;
+    assert(dd->addrs);
+  }
+  pthread_barrier_wait(&g_thread_sync_barrier);
+  return 0;
+}
+
+int fio_dhms_post_init(struct thread_data *td) {
+  fprintf(stderr, "[%s] \n", __func__);
   return 0;
 }
 
 int fio_dhms_get_file_size(struct thread_data *td, struct fio_file *f) {
   struct dhms_data *dd = td->io_ops_data;
+  fprintf(stderr, "[%s] \n", __func__);
 
   f->real_file_size = dd->ws_size;
   fio_file_set_size_known(f);
@@ -126,7 +185,9 @@ static int fio_dhms_close_file(struct thread_data *td, struct fio_file *f) {
 static struct ioengine_ops ioengine = {
     .name = "dhms",
     .version = FIO_IOOPS_VERSION,
+    .setup = fio_dhms_setup,
     .init = fio_dhms_init,
+    .post_init = fio_dhms_post_init,
     .get_file_size = fio_dhms_get_file_size,
     .queue = fio_dhms_queue,
     .open_file = fio_dhms_open_file,
@@ -138,8 +199,10 @@ static struct ioengine_ops ioengine = {
 
 static void fio_init fio_dhms_register(void) {
   register_ioengine(&ioengine);
+  pthread_mutex_init(&g_init_mut, NULL);
 }
 
 static void fio_exit fio_dhms_unregister(void) {
   unregister_ioengine(&ioengine);
+  pthread_mutex_destroy(&g_init_mut);
 }
