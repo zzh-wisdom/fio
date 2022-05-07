@@ -4,7 +4,7 @@
  * 采用read/write读写文件到指定的dsm_addr中
  *
  */
-#include <dhms.h>
+#include <dhms/dhms.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,21 +35,24 @@ static struct fio_option options[] = {
 struct dhms_data {
   size_t ws_size;  // 数据集大小
   size_t bs;  // 单次io的大小
-  int num_addrs;
+  int obj_hdl_num;
+  dhms_epoch_t epoch;
 
   // 全局client启动后才初始化
-  dhms_addr *addrs;
-  struct dhms_pool *pool;
+  dhms_connect_handle_t ch;
+  dhms_pool_handle_t ph;
+  dhms_obj_handle_t *obj_hdls;
 };
 
+const char* client_ip = "192.168.1.33";
+const char* master_ip = "192.168.1.33";
 static pthread_mutex_t g_init_mut;
 static int thread_total_num = 0;
 static pthread_barrier_t g_thread_sync_barrier;
 static bool has_initiator = false; // 是否有线程在初始化
 
-dhms_addr *g_addrs;
-
-#define OBJ_MAX_SIZE (2L << 20)
+#define MAX_BS 4096
+char fio_load_buf[MAX_BS] = "fio: obj init data";
 
 // 忽略
 static int fio_dhms_setup(struct thread_data *td) {
@@ -61,9 +64,13 @@ static int fio_dhms_setup(struct thread_data *td) {
 static int fio_dhms_init(struct thread_data *td) {
   struct dhms_data *dd;
   struct thread_options *o = &td->o;
-  struct dhms_options_values *eo = td->eo;
+  // struct dhms_options_values *eo = td->eo;
   int rc;
+  dhms_client_options_t opts;
   bool i_am_initiator = false;
+  int qp_id;
+  char pool_name[512];
+
 
   printf("thread_total_num: %u\n", td->thread_total_num);
 
@@ -74,8 +81,10 @@ static int fio_dhms_init(struct thread_data *td) {
   dd->ws_size = o->size;
   dd->bs = o->bs[DDIR_WRITE];
   assert(dd->bs);
-  dd->num_addrs = dd->ws_size / dd->bs;
-  assert(dd->num_addrs);
+  assert(dd->bs <= MAX_BS);
+  dd->obj_hdl_num = dd->ws_size / dd->bs;
+  assert(dd->obj_hdl_num);
+  dd->epoch = 0;
   td->io_ops_data = dd;
 
   // 竞争初始化者
@@ -89,41 +98,38 @@ static int fio_dhms_init(struct thread_data *td) {
   if(i_am_initiator) {
     // 初始化全局环境，即各个线程共享的部分，包括
     // 1. 全局共享变量
-    // 2. 共享master qp
+    // 2. 共享dhms环境（如客户端代理，master qp）
     thread_total_num = td->thread_total_num;
     rc = pthread_barrier_init(&g_thread_sync_barrier, NULL, thread_total_num);
     assert(!rc);
-
-    g_addrs = malloc(dd->num_addrs * sizeof(dhms_addr));
-    assert(g_addrs);
-    dd->addrs = g_addrs;
-
-    // TODO: 初始化rrpc_manager, 与master建立连接
+    opts.client_port = 10070,
+    opts.master_port = 10086,
+    opts.dev_id = 0,
+    opts.port_id = 1,
+    opts.io_size = dd->bs,
+    opts.msg_ring_buffer_tail_size = 0,
+    strcpy(opts.client_ip, client_ip);
+    strcpy(opts.master_ip, master_ip);
+    rc = dhms_client_init(&opts);
+    assert(!rc);
   }
   pthread_barrier_wait(&g_thread_sync_barrier);
 
   // 每个线程和dn建立qp
-  // 准备所需的mr buf
-  pthread_barrier_wait(&g_thread_sync_barrier);
-
-  if(i_am_initiator) {
-    // 创建pool
-    dd->pool = dhms_create(eo->conf_file, "fio-pool");
-    // 预分配GAddr
-    for (int i = 0; i < dd->num_addrs; i++) {
-      dd->addrs[i] = dhms_alloc(dd->pool, o->bs[DDIR_WRITE]);
-      // 预写
-      dhms_write(dd->pool, dd->addrs[i], &i, sizeof(i));
-    }
+  qp_id = td->thread_number - 1;
+  assert(qp_id >= 0);
+  dhms_connect_handle_create(qp_id, false, &dd->ch);
+  snprintf(pool_name, 512, "%s:[%d]", "fio_thread_pool", td->thread_number);
+  // 创建pool
+  dhms_pool_create(pool_name, dd->ws_size, &dd->ph);
+  // 预写
+  dd->obj_hdls = malloc(dd->obj_hdl_num * sizeof(dhms_obj_handle_t));
+  assert(dd->obj_hdls);
+  for(int i = 0; i < dd->obj_hdl_num; ++i) {
+    dhms_obj_alloc(dd->ph, dd->bs, &dd->obj_hdls[i]);
+    dhms_obj_write_sync(dd->ph, dd->obj_hdls[i], dd->epoch, 0, dd->bs,fio_load_buf, dd->ch);
   }
-  pthread_barrier_wait(&g_thread_sync_barrier);
 
-  if(!i_am_initiator) {
-    // 获取pool句柄
-    // 设置dd->addrs[i]
-    dd->addrs = g_addrs;
-    assert(dd->addrs);
-  }
   pthread_barrier_wait(&g_thread_sync_barrier);
   return 0;
 }
@@ -147,14 +153,14 @@ static enum fio_q_status fio_dhms_queue(struct thread_data *td,
                                         struct io_u *io_u) {
   struct dhms_data *dd = td->io_ops_data;
   int ret = 0;
-  int idx = io_u->offset / dd->bs % dd->num_addrs;
+  int idx = io_u->offset / dd->bs % dd->obj_hdl_num;
 
   if (io_u->ddir == DDIR_READ) {
-    ret =
-        dhms_read(dd->pool, dd->addrs[idx], io_u->xfer_buf, io_u->xfer_buflen);
+    assert(dd->bs == io_u->xfer_buflen);
+    ret = dhms_obj_read_sync(dd->ph, dd->obj_hdls[idx], dd->epoch, dd->bs, io_u->xfer_buf, 0, dd->ch);
   } else if (io_u->ddir == DDIR_WRITE) {
-    ret =
-        dhms_write(dd->pool, dd->addrs[idx], io_u->xfer_buf, io_u->xfer_buflen);
+    assert(dd->bs == io_u->xfer_buflen);
+    ret = dhms_obj_write_sync(dd->ph, dd->obj_hdls[idx], dd->epoch++, 0, dd->bs, io_u->xfer_buf, dd->ch);
   } else {
     log_err("dhms: Invalid I/O Operation: %d\n", io_u->ddir);
     ret = EINVAL;

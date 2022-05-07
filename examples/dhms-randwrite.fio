@@ -10,6 +10,6 @@ runtime=1
 create_serialize=0
 
 [job1]
-size=4K
+size=1M
 ioengine=dhms
 conf=/

@@ -982,10 +982,10 @@ if test "$dhms" != "yes" ; then
 fi
 cat > $TMPC << EOF
 #include <stdio.h>
-#include <dhms.h>
+#include <dhms/dhms.h>
 int main(int argc, char **argv)
 {
-  dhms_addr addr = 0UL;
+  dhms_connect_handle_t ch = 0;
   return 0;
 }
 EOF
