@@ -53,6 +53,10 @@ static bool has_initiator = false; // 是否有线程在初始化
 
 #define MAX_BS 4096
 char fio_load_buf[MAX_BS] = "fio: obj init data";
+#define MAX_THREAD_NUM 128
+dhms_pool_handle_t g_pool_handles[MAX_THREAD_NUM];
+dhms_pool_handle_t* g_obj_hdls[MAX_THREAD_NUM];
+
 
 // 忽略
 static int fio_dhms_setup(struct thread_data *td) {
@@ -70,7 +74,7 @@ static int fio_dhms_init(struct thread_data *td) {
   bool i_am_initiator = false;
   int qp_id;
   char pool_name[512];
-
+  uint64_t pool_size;
 
   printf("thread_total_num: %u\n", td->thread_total_num);
 
@@ -84,7 +88,7 @@ static int fio_dhms_init(struct thread_data *td) {
   assert(dd->bs <= MAX_BS);
   dd->obj_hdl_num = dd->ws_size / dd->bs;
   assert(dd->obj_hdl_num);
-  dd->epoch = 0;
+  dd->epoch = 1;
   td->io_ops_data = dd;
 
   // 竞争初始化者
@@ -99,6 +103,8 @@ static int fio_dhms_init(struct thread_data *td) {
     // 初始化全局环境，即各个线程共享的部分，包括
     // 1. 全局共享变量
     // 2. 共享dhms环境（如客户端代理，master qp）
+    // 3. 创建pool（master qp目前非多线程安全）
+    // 4. oid预分配
     thread_total_num = td->thread_total_num;
     rc = pthread_barrier_init(&g_thread_sync_barrier, NULL, thread_total_num);
     assert(!rc);
@@ -112,6 +118,20 @@ static int fio_dhms_init(struct thread_data *td) {
     strcpy(opts.master_ip, master_ip);
     rc = dhms_client_init(&opts);
     assert(!rc);
+    for(int i = 0; i < td->thread_total_num; ++i) {
+      snprintf(pool_name, 512, "%s:[%d]", "fio_thread_pool", i);
+      // 创建pool
+      pool_size = (dd->obj_hdl_num >> HOS_REGION_OBJ_ID_BITS)*REGION_MAX_SIZE;
+      if(pool_size < dd->ws_size) pool_size = dd->ws_size;
+      dhms_pool_create(pool_name, pool_size, &g_pool_handles[i]);
+      // OID 预分配
+      g_obj_hdls[i] = malloc(dd->obj_hdl_num * sizeof(dhms_obj_handle_t));
+      assert(g_obj_hdls[i]);
+      for(int j = 0; j < dd->obj_hdl_num; ++j) {
+        rc = dhms_obj_alloc(g_pool_handles[i], dd->bs, &g_obj_hdls[i][j]);
+        assert(!rc);
+      }
+    }
   }
   pthread_barrier_wait(&g_thread_sync_barrier);
 
@@ -119,16 +139,15 @@ static int fio_dhms_init(struct thread_data *td) {
   qp_id = td->thread_number - 1;
   assert(qp_id >= 0);
   dhms_connect_handle_create(qp_id, false, &dd->ch);
-  snprintf(pool_name, 512, "%s:[%d]", "fio_thread_pool", td->thread_number);
-  // 创建pool
-  dhms_pool_create(pool_name, dd->ws_size, &dd->ph);
-  // 预写
-  dd->obj_hdls = malloc(dd->obj_hdl_num * sizeof(dhms_obj_handle_t));
-  assert(dd->obj_hdls);
+  dd->ph = g_pool_handles[td->thread_number - 1];
+  dd->obj_hdls = g_obj_hdls[td->thread_number - 1];
+
+  printf("\tobj_hdl_num: %d\n", dd->obj_hdl_num);
   for(int i = 0; i < dd->obj_hdl_num; ++i) {
-    dhms_obj_alloc(dd->ph, dd->bs, &dd->obj_hdls[i]);
-    dhms_obj_write_sync(dd->ph, dd->obj_hdls[i], dd->epoch, 0, dd->bs,fio_load_buf, dd->ch);
+    rc = dhms_obj_write_sync(dd->ph, dd->obj_hdls[i], dd->epoch, 0, dd->bs,fio_load_buf, dd->ch);
+    assert(rc == dd->bs);
   }
+  printf("Load Complete [thread: %d]\n", td->thread_number);
 
   pthread_barrier_wait(&g_thread_sync_barrier);
   return 0;
@@ -156,11 +175,15 @@ static enum fio_q_status fio_dhms_queue(struct thread_data *td,
   int idx = io_u->offset / dd->bs % dd->obj_hdl_num;
 
   if (io_u->ddir == DDIR_READ) {
+    // ret = io_u->xfer_buflen;
     assert(dd->bs == io_u->xfer_buflen);
     ret = dhms_obj_read_sync(dd->ph, dd->obj_hdls[idx], dd->epoch, dd->bs, io_u->xfer_buf, 0, dd->ch);
+    // assert(!ret);
   } else if (io_u->ddir == DDIR_WRITE) {
+    // ret = io_u->xfer_buflen;
     assert(dd->bs == io_u->xfer_buflen);
     ret = dhms_obj_write_sync(dd->ph, dd->obj_hdls[idx], dd->epoch++, 0, dd->bs, io_u->xfer_buf, dd->ch);
+    // assert(!ret);
   } else {
     log_err("dhms: Invalid I/O Operation: %d\n", io_u->ddir);
     ret = EINVAL;
